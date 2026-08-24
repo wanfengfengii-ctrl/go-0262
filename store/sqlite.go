@@ -350,8 +350,15 @@ func (t *sqlTx) CreateTask(ctx context.Context, _ inspection.LockRequest, task i
 }
 
 func (t *sqlTx) UpdateTaskState(ctx context.Context, id inspection.TaskID, gen inspection.Generation, from, to inspection.State) error {
-	res, err := t.tx.ExecContext(ctx, `UPDATE tasks SET state=? WHERE id=? AND generation=?`,
-		to.String(), string(id), int64(gen))
+	// CAS: only advance when the current state is still the expected `from`.
+	// The `from` predicate in the WHERE clause is load-bearing: without it two
+	// concurrent advances (e.g. a duplicate qPCR submission during DNA
+	// verification) both match on id+generation and both report success,
+	// double-advancing the task and writing duplicate evidence versions.
+	// Including `from` makes the loser update zero rows and fall through to the
+	// ErrWrongState diagnosis below, so its whole transaction rolls back.
+	res, err := t.tx.ExecContext(ctx, `UPDATE tasks SET state=? WHERE id=? AND generation=? AND state=?`,
+		to.String(), string(id), int64(gen), from.String())
 	if err != nil {
 		return err
 	}
