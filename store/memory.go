@@ -45,8 +45,12 @@ func newMemState() *memState {
 	}
 }
 
-func leaseKey(typ ledger.ResourceType, id string) string {
-	return string(typ) + ":" + id
+// leaseKey is the map key for one (resource, task) pair. Including the task id
+// keeps a released lease as audit history instead of being overwritten when a
+// later task claims the same resource; the "at most one active lease per
+// resource" invariant is enforced inside SaveLease.
+func leaseKey(typ ledger.ResourceType, id string, task inspection.TaskID) string {
+	return string(typ) + ":" + id + ":" + string(task)
 }
 
 // Memory is a concurrency-safe in-memory Store. WithTx clones the current
@@ -292,9 +296,15 @@ func (t *memTx) RevealBlind(_ context.Context, id inspection.TaskID, gen inspect
 }
 
 func (t *memTx) SaveLease(_ context.Context, l ledger.ResourceLease) error {
-	key := leaseKey(l.ResourceType, l.ResourceID)
-	if prior, ok := t.state.leases[key]; ok && prior.Status == ledger.LeaseActive && prior.TaskID != l.TaskID {
-		return ErrDuplicate
+	key := leaseKey(l.ResourceType, l.ResourceID, l.TaskID)
+	// At most one active lease per resource: a different task's active lease
+	// blocks this claim. The same task re-claiming a resource it already holds
+	// (or swapping it) upserts its own row, leaving released rows as history.
+	for _, existing := range t.state.leases {
+		if existing.ResourceType == l.ResourceType && existing.ResourceID == l.ResourceID &&
+			existing.Status == ledger.LeaseActive && existing.TaskID != l.TaskID {
+			return ErrDuplicate
+		}
 	}
 	t.state.leases[key] = l
 	return nil

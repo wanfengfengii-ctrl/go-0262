@@ -86,8 +86,10 @@ CREATE TABLE IF NOT EXISTS leases (
   status TEXT NOT NULL,
   acquired_at INTEGER NOT NULL,
   released_at INTEGER NOT NULL,
-  PRIMARY KEY (resource_type, resource_id)
+  PRIMARY KEY (resource_type, resource_id, task_id)
 );
+-- At most one active lease per resource; released rows are retained as audit
+-- history and never overwritten by a later task's claim.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_active
   ON leases(resource_type, resource_id) WHERE status='active';
 
@@ -428,32 +430,24 @@ func (t *sqlTx) RevealBlind(ctx context.Context, id inspection.TaskID, gen inspe
 }
 
 func (t *sqlTx) SaveLease(ctx context.Context, l ledger.ResourceLease) error {
-	var existingTask string
-	var status string
-	err := t.tx.QueryRowContext(ctx, `SELECT task_id, status FROM leases WHERE resource_type=? AND resource_id=?`,
-		string(l.ResourceType), l.ResourceID).Scan(&existingTask, &status)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		_, err = t.tx.ExecContext(ctx, `
-			INSERT INTO leases (resource_type, resource_id, task_id, generation, status, acquired_at, released_at)
-			VALUES (?,?,?,?,?,?,?)`,
-			string(l.ResourceType), l.ResourceID, string(l.TaskID), int64(l.Generation), leaseStatusString(l.Status), int64(l.AcquiredAt), int64(l.ReleasedAt))
-		if err != nil && isConstraint(err) {
-			return ErrDuplicate
-		}
-		return err
-	case err != nil:
-		return err
-	}
-
-	if status == "active" && existingTask != string(l.TaskID) {
+	// Each (resource, task) pair is its own row, so a released lease survives as
+	// audit history when a later task claims the same resource. The
+	// idx_leases_active partial unique index enforces "at most one active lease
+	// per resource"; an active claim that collides with another task's active
+	// lease is mapped to ErrDuplicate. Re-claiming or swapping a resource the
+	// task already holds upserts its own row.
+	_, err := t.tx.ExecContext(ctx, `
+		INSERT INTO leases (resource_type, resource_id, task_id, generation, status, acquired_at, released_at)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(resource_type, resource_id, task_id) DO UPDATE SET
+			generation=excluded.generation,
+			status=excluded.status,
+			acquired_at=excluded.acquired_at,
+			released_at=excluded.released_at`,
+		string(l.ResourceType), l.ResourceID, string(l.TaskID), int64(l.Generation), leaseStatusString(l.Status), int64(l.AcquiredAt), int64(l.ReleasedAt))
+	if err != nil && isConstraint(err) {
 		return ErrDuplicate
 	}
-	_, err = t.tx.ExecContext(ctx, `
-		UPDATE leases SET task_id=?, generation=?, status=?, acquired_at=?, released_at=?
-		WHERE resource_type=? AND resource_id=?`,
-		string(l.TaskID), int64(l.Generation), leaseStatusString(l.Status), int64(l.AcquiredAt), int64(l.ReleasedAt),
-		string(l.ResourceType), l.ResourceID)
 	return err
 }
 
