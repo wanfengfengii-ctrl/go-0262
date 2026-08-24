@@ -26,6 +26,7 @@ type memState struct {
 	finals     map[inspection.TaskID]arbiter.ReviewAndFinal
 	barrels    map[string]inspection.TaskID
 	seals      map[string]inspection.TaskID
+	blindOccupied map[string]inspection.TaskID
 }
 
 func newMemState() *memState {
@@ -42,6 +43,7 @@ func newMemState() *memState {
 		finals:     make(map[inspection.TaskID]arbiter.ReviewAndFinal),
 		barrels:    make(map[string]inspection.TaskID),
 		seals:      make(map[string]inspection.TaskID),
+		blindOccupied: make(map[string]inspection.TaskID),
 	}
 }
 
@@ -216,6 +218,11 @@ func (t *memTx) CreateTask(_ context.Context, _ inspection.LockRequest, task ins
 			return inspection.InspectionTask{}, ErrDuplicate
 		}
 	}
+	if task.BlindCode != "" {
+		if _, ok := t.state.blindOccupied[task.BlindCode]; ok {
+			return inspection.InspectionTask{}, ErrDuplicate
+		}
+	}
 	if task.ID == "" {
 		t.state.seq++
 		task.ID = inspection.TaskID(formatID(t.state.seq))
@@ -233,6 +240,9 @@ func (t *memTx) CreateTask(_ context.Context, _ inspection.LockRequest, task ins
 	if task.Seal != "" {
 		t.state.seals[task.Seal] = task.ID
 	}
+	if task.BlindCode != "" {
+		t.state.blindOccupied[task.BlindCode] = task.ID
+	}
 	return task, nil
 }
 
@@ -249,10 +259,11 @@ func (t *memTx) UpdateTaskState(_ context.Context, id inspection.TaskID, gen ins
 	}
 	task.State = to
 	t.state.tasks[id] = task
-	// Terminal transition releases the barrel and seal identifiers.
+	// Terminal transition releases the barrel, seal and blind-code identifiers.
 	if to.IsTerminal() {
 		delete(t.state.barrels, task.Barrel)
 		delete(t.state.seals, task.Seal)
+		delete(t.state.blindOccupied, task.BlindCode)
 	}
 	return nil
 }
@@ -384,6 +395,9 @@ func cloneState(src *memState) *memState {
 	}
 	for k, v := range src.seals {
 		dst.seals[k] = v
+	}
+	for k, v := range src.blindOccupied {
+		dst.blindOccupied[k] = v
 	}
 	return dst
 }

@@ -17,22 +17,20 @@ func TestBlindCodeDuplicateRejected(t *testing.T) {
 	id1, gen1 := e.lock(t, in1)
 	e.advanceTo(t, id1, gen1, inspection.StateSealingSamples)
 
+	// A second open task must not share the same sampling blind code; the
+	// duplicate is rejected at lock time, exactly like a barrel or seal.
 	in2 := defaultLockInput("B-2", "S-2")
 	in2.BlindCode = "BC-dup"
-	id2, gen2 := e.lock(t, in2)
-	e.advanceTo(t, id2, gen2, inspection.StateSealingSamples)
+	if _, err := e.svc.Lock(context.Background(), in2); !errors.Is(err, ErrResourceOccupied) {
+		t.Fatalf("got %v, want ErrResourceOccupied at lock", err)
+	}
 
-	seal := func(id inspection.TaskID, gen inspection.Generation, op string) error {
-		return e.svc.SealSamples(context.Background(), SealSamplesInput{
-			Operation: inspection.OperationID(op), TaskID: id, Generation: gen,
-			BlindCode: "BC-dup", Triplicates: []string{"T-1", "T-2", "T-3"}, SealedBy: "alice",
-		})
-	}
-	if err := seal(id1, gen1, "seal-1"); err != nil {
+	// The first task still seals cleanly with its frozen blind code.
+	if err := e.svc.SealSamples(context.Background(), SealSamplesInput{
+		Operation: "seal-1", TaskID: id1, Generation: gen1,
+		BlindCode: "BC-dup", Triplicates: []string{"T-1", "T-2", "T-3"}, SealedBy: "alice",
+	}); err != nil {
 		t.Fatalf("first seal: %v", err)
-	}
-	if err := seal(id2, gen2, "seal-2"); !errors.Is(err, ErrResourceOccupied) {
-		t.Fatalf("got %v, want ErrResourceOccupied", err)
 	}
 }
 

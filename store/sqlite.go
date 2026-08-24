@@ -59,6 +59,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_barrel_open
   ON tasks(barrel) WHERE state NOT IN ('matured','quarantined','cancelled');
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_seal_open
   ON tasks(seal) WHERE state NOT IN ('matured','quarantined','cancelled');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_blind_open
+  ON tasks(blind_code) WHERE state NOT IN ('matured','quarantined','cancelled');
 
 CREATE TABLE IF NOT EXISTS operations (
   operation TEXT PRIMARY KEY,
@@ -195,7 +197,7 @@ func (s *SQLite) Recover(ctx context.Context) error {
 
 	occupied := make(map[string]inspection.TaskID)
 
-	rows, err := s.db.QueryContext(ctx, `SELECT id, barrel, seal, state FROM tasks WHERE state NOT IN ('matured','quarantined','cancelled')`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, barrel, seal, blind_code, state FROM tasks WHERE state NOT IN ('matured','quarantined','cancelled')`)
 	if err != nil {
 		return err
 	}
@@ -203,12 +205,13 @@ func (s *SQLite) Recover(ctx context.Context) error {
 		id     inspection.TaskID
 		barrel string
 		seal   string
+		blind  string
 	}
 	var open []openTask
 	for rows.Next() {
 		var t openTask
 		var state string
-		if err := rows.Scan(&t.id, &t.barrel, &t.seal, &state); err != nil {
+		if err := rows.Scan(&t.id, &t.barrel, &t.seal, &t.blind, &state); err != nil {
 			rows.Close()
 			return err
 		}
@@ -221,6 +224,7 @@ func (s *SQLite) Recover(ctx context.Context) error {
 	for _, t := range open {
 		occupied["barrel:"+t.barrel] = t.id
 		occupied["seal:"+t.seal] = t.id
+		occupied["blind:"+t.blind] = t.id
 	}
 
 	// Validate leases: release any active lease bound to a terminal or missing
