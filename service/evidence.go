@@ -153,7 +153,9 @@ type SubmitChemistryInput struct {
 
 // SubmitChemistry validates the five fixed-decimal metrics against the locked
 // chemistry thresholds, writes a derived evidence version and advances the
-// task to pending-independent-review.
+// task to pending-independent-review. An out-of-threshold metric is a valid
+// reading recorded as failed evidence so it enters review and drives
+// quarantine, rather than being rejected outright.
 func (s *Service) SubmitChemistry(ctx context.Context, in SubmitChemistryInput) error {
 	hash := store.HashContent(in)
 	if replayed, _, err := s.checkReplay(ctx, in.Operation, hash); err != nil {
@@ -186,7 +188,10 @@ func (s *Service) SubmitChemistry(ctx context.Context, in SubmitChemistryInput) 
 	}
 	conclusion := "pass"
 	if len(violations) > 0 {
-		return ErrInvalidReading
+		// An out-of-threshold metric is still a valid fixed-decimal reading.
+		// Record it as failed evidence so it enters independent review and
+		// drives the auto quarantine path, mirroring the DNA Ct flow.
+		conclusion = "fail"
 	}
 
 	chain, err := s.store.LoadEvidence(ctx, in.TaskID, in.Generation)
