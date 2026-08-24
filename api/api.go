@@ -128,7 +128,7 @@ func mapError(err error) (code string, status int, msg string) {
 	switch {
 	case errors.Is(err, service.ErrNotFound):
 		return CodeNotFound, http.StatusNotFound, err.Error()
-	case errors.Is(err, service.ErrBadRequest):
+	case errors.Is(err, service.ErrBadRequest), errors.Is(err, service.ErrUnboundEvidence):
 		return CodeBadRequest, http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrOperationConflict):
 		return CodeOperationConflict, http.StatusConflict, err.Error()

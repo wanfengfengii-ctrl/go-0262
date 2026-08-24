@@ -156,3 +156,78 @@ func TestLateGenerationReadingIsolated(t *testing.T) {
 		t.Fatalf("state changed on stale reading: %s", e.currentState(t, id))
 	}
 }
+
+// TestEvidenceRejectsUnboundResources ensures a qPCR/理化读数 or rejudge may
+// only bind the blind code, slide and plate well that this task locked. A
+// blind code, slide or well belonging to another task must be rejected before
+// any evidence is written, so the quality record's evidence identifiers stay
+// aligned with the locked resources.
+func TestEvidenceRejectsUnboundResources(t *testing.T) {
+	e := newEnv(t, nil)
+	id, gen := e.lock(t, defaultLockInput("B-7", "S-7"))
+	e.advanceTo(t, id, gen, inspection.StateVerifyingDNA)
+
+	// Another task owns these identifiers.
+	foreignBlind := "BC-FOREIGN"
+	foreignSlide := "SL-FOREIGN"
+	foreignWell := "W-FOREIGN"
+
+	cases := []struct {
+		name string
+		op   string
+		err  error
+	}{
+		{"dna wrong blind", "dna-b", e.svc.SubmitDNA(context.Background(), SubmitDNAInput{
+			Operation: "dna-b", TaskID: id, Generation: gen,
+			BlindCode: foreignBlind, Slide: "SL-1", Well: "W-B-7", Reading: "30.00",
+		})},
+		{"dna wrong slide", "dna-s", e.svc.SubmitDNA(context.Background(), SubmitDNAInput{
+			Operation: "dna-s", TaskID: id, Generation: gen,
+			BlindCode: "BC-B-7", Slide: foreignSlide, Well: "W-B-7", Reading: "30.00",
+		})},
+		{"dna wrong well", "dna-w", e.svc.SubmitDNA(context.Background(), SubmitDNAInput{
+			Operation: "dna-w", TaskID: id, Generation: gen,
+			BlindCode: "BC-B-7", Slide: "SL-1", Well: foreignWell, Reading: "30.00",
+		})},
+	}
+	for _, c := range cases {
+		if !errors.Is(c.err, ErrUnboundEvidence) {
+			t.Fatalf("%s: got %v, want ErrUnboundEvidence", c.name, c.err)
+		}
+	}
+
+	// No DNA evidence may have been written, and the task must still be
+	// waiting for a bound DNA reading.
+	chain, err := e.store.LoadEvidence(context.Background(), id, gen)
+	if err != nil {
+		t.Fatalf("LoadEvidence: %v", err)
+	}
+	if len(chain) != 0 {
+		t.Fatalf("unbound DNA reading polluted the chain: %+v", chain)
+	}
+	if e.currentState(t, id) != inspection.StateVerifyingDNA {
+		t.Fatalf("state advanced on unbound reading: %s", e.currentState(t, id))
+	}
+
+	// Advance to retesting-chemistry and confirm chemistry rejects unbound
+	// resources too.
+	e.advanceTo(t, id, gen, inspection.StateRetestingChemistry)
+	if err := e.svc.SubmitChemistry(context.Background(), SubmitChemistryInput{
+		Operation: "chem-foreign", TaskID: id, Generation: gen,
+		BlindCode: foreignBlind, Slide: "SL-1", Well: "W-B-7",
+		HMF: "20.0", Amylase: "12.0", Moisture: "16.0", Conductivity: "0.50", Acidity: "30.0",
+	}); !errors.Is(err, ErrUnboundEvidence) {
+		t.Fatalf("chemistry: got %v, want ErrUnboundEvidence", err)
+	}
+	if e.currentState(t, id) != inspection.StateRetestingChemistry {
+		t.Fatalf("state advanced on unbound chemistry: %s", e.currentState(t, id))
+	}
+
+	// Rejudge must likewise reject a foreign blind code.
+	if err := e.svc.Rejudge(context.Background(), RejudgeInput{
+		Operation: "rej-foreign", TaskID: id, Generation: gen,
+		BlindCode: foreignBlind, Slide: "SL-1", Well: "W-B-7", Reason: "anomaly", Reviewer: "carol",
+	}); !errors.Is(err, ErrUnboundEvidence) {
+		t.Fatalf("rejudge: got %v, want ErrUnboundEvidence", err)
+	}
+}

@@ -29,6 +29,7 @@ var (
 	ErrOverlap           = errors.New("service: personnel overlap")
 	ErrInvalidReading    = errors.New("service: invalid reading")
 	ErrAdapterRetry      = errors.New("service: adapter retry pending")
+	ErrUnboundEvidence   = errors.New("service: evidence binding does not match locked resources")
 )
 
 // Service coordinates the intake flows.
@@ -133,6 +134,34 @@ func (s *Service) applyIdempotent(
 // adapter returns the configured adapter for an instrument, or nil.
 func (s *Service) adapter(inst evidence.InstrumentType) evidence.InstrumentAdapter {
 	return s.adapters[inst]
+}
+
+// validateEvidenceBinding enforces that a submitted evidence record's blind code,
+// slide and plate well belong to the resources this task locked at lock time.
+// Evidence may only ever bind to the current task's own samples and resources,
+// never to another task's blind code, slide or well. This keeps the quality
+// record's evidence identifiers aligned with the locked resources.
+func validateEvidenceBinding(t inspection.InspectionTask, blindCode, slide, well string) error {
+	if blindCode != t.BlindCode {
+		return ErrUnboundEvidence
+	}
+	if well != t.Well {
+		return ErrUnboundEvidence
+	}
+	if !containsSlide(t.Slides, slide) {
+		return ErrUnboundEvidence
+	}
+	return nil
+}
+
+// containsSlide reports whether slide is among the locked slide numbers.
+func containsSlide(slides []string, slide string) bool {
+	for _, s := range slides {
+		if s == slide {
+			return true
+		}
+	}
+	return false
 }
 
 // ruleForTask loads a task and resolves its farm rule, mapping a missing task

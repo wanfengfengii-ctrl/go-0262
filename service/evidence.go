@@ -102,6 +102,9 @@ func (s *Service) SubmitDNA(ctx context.Context, in SubmitDNAInput) error {
 	if err != nil {
 		return err
 	}
+	if err := validateEvidenceBinding(t, in.BlindCode, in.Slide, in.Well); err != nil {
+		return err
+	}
 
 	conclusion := "pass"
 	if evidence.ValidateDNA(ct, t.DNAThreshold) != nil {
@@ -184,6 +187,9 @@ func (s *Service) SubmitChemistry(ctx context.Context, in SubmitChemistryInput) 
 	if err != nil {
 		return err
 	}
+	if err := validateEvidenceBinding(t, in.BlindCode, in.Slide, in.Well); err != nil {
+		return err
+	}
 	conclusion := "pass"
 	if len(violations) > 0 {
 		conclusion = "fail"
@@ -253,6 +259,9 @@ func (s *Service) Rejudge(ctx context.Context, in RejudgeInput) error {
 	}
 	if err := rule.ValidatePersonnel(in.Reviewer); err != nil {
 		return ErrUnqualified
+	}
+	if err := validateEvidenceBinding(t, in.BlindCode, in.Slide, in.Well); err != nil {
+		return err
 	}
 
 	chain, err := s.store.LoadEvidence(ctx, in.TaskID, in.Generation)
