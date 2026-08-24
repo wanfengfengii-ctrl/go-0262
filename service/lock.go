@@ -114,13 +114,22 @@ func (s *Service) Lock(ctx context.Context, in LockInput) (LockResult, error) {
 	}
 
 	var created inspection.InspectionTask
-	err = s.applyIdempotent(ctx, in.Operation, hash, "", func(tx store.Tx) error {
+	err = s.applyIdempotentResult(ctx, in.Operation, hash, func(tx store.Tx) (string, error) {
 		var cerr error
 		created, cerr = tx.CreateTask(ctx, lockReq, task)
 		if cerr != nil {
-			return mapStoreErr(cerr)
+			return "", mapStoreErr(cerr)
 		}
-		return nil
+		resultJSON, merr := json.Marshal(LockResult{
+			TaskID:     created.ID,
+			Generation: created.Generation,
+			State:      created.State,
+			Occupied:   []string{in.Barrel, in.Seal},
+		})
+		if merr != nil {
+			return "", merr
+		}
+		return string(resultJSON), nil
 	})
 	if err != nil {
 		return LockResult{}, err

@@ -102,7 +102,9 @@ func (s *Service) checkReplay(ctx context.Context, op inspection.OperationID, ha
 
 // applyIdempotent wraps a transaction so an operation id is enforced. Callers
 // must have already resolved replays via checkReplay; this records the
-// operation atomically with the business write.
+// operation atomically with the business write. The resultJSON is captured
+// before the write and is only suitable when the result does not depend on
+// values produced inside the transaction.
 func (s *Service) applyIdempotent(
 	ctx context.Context,
 	op inspection.OperationID,
@@ -112,6 +114,37 @@ func (s *Service) applyIdempotent(
 ) error {
 	err := s.store.WithTx(ctx, func(tx store.Tx) error {
 		if err := apply(tx); err != nil {
+			return err
+		}
+		if op != "" {
+			return tx.SaveOperation(ctx, store.OperationRecord{
+				Operation:   op,
+				ContentHash: hash,
+				ResultJSON:  resultJSON,
+				AppliedAt:   s.clock.Now(),
+			})
+		}
+		return nil
+	})
+	if errors.Is(err, store.ErrDuplicate) {
+		return ErrOperationConflict
+	}
+	return err
+}
+
+// applyIdempotentResult is the variant for writes whose result is derived from
+// values produced inside the transaction (e.g. a server-generated task id).
+// The apply callback returns the serialized result so it is persisted
+// atomically with the business write and can be replayed verbatim later.
+func (s *Service) applyIdempotentResult(
+	ctx context.Context,
+	op inspection.OperationID,
+	hash string,
+	apply func(tx store.Tx) (string, error),
+) error {
+	err := s.store.WithTx(ctx, func(tx store.Tx) error {
+		resultJSON, err := apply(tx)
+		if err != nil {
 			return err
 		}
 		if op != "" {
