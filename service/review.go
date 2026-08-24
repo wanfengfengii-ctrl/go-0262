@@ -137,6 +137,7 @@ func (s *Service) Finalize(ctx context.Context, in FinalizeInput) (FinalizeResul
 
 	result := FinalizeResult{FinalType: ft, CredentialID: credential}
 	resultJSON, _ := json.Marshal(result)
+	now := s.clock.Now()
 	err = s.applyIdempotent(ctx, in.Operation, hash, string(resultJSON), func(tx store.Tx) error {
 		if err := tx.SaveFinal(ctx, arbiter.NewFinal(in.TaskID, in.Reviewer, "all-evidence", in.Generation, ft, credential, barrier)); err != nil {
 			return err
@@ -144,7 +145,11 @@ func (s *Service) Finalize(ctx context.Context, in FinalizeInput) (FinalizeResul
 		if err := tx.UpdateTaskState(ctx, in.TaskID, in.Generation, inspection.StateReadyForMaturation, finalState); err != nil {
 			return err
 		}
-		return nil
+		// A terminal conclusion archives the task: the maturation-tank slot,
+		// DNA plate well and slide leases it held are released so a later batch
+		// may occupy the same resources. This mirrors the orphan-lease release
+		// performed at startup recovery and is the release-on-completion rule.
+		return tx.ReleaseLeases(ctx, in.TaskID, now)
 	})
 	if err != nil {
 		return FinalizeResult{}, err
