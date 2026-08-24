@@ -94,7 +94,32 @@ func (s *Service) SwapWell(ctx context.Context, in SwapWellInput) error {
 	if err := t.MustNotBeTerminal(); err != nil {
 		return err
 	}
+	// Stage gate: a well swap is a resource-lease operation and is only
+	// meaningful once the task has claimed its leases (the state has advanced
+	// past claiming-resources) and before the terminal finalize releases them.
+	// Allowing a swap earlier would acquire a lease the task is not yet entitled
+	// to hold, prematurely occupying the new well for a task still sampling.
+	switch t.State {
+	case inspection.StateCountingPollen,
+		inspection.StateVerifyingDNA,
+		inspection.StateRetestingChemistry,
+		inspection.StatePendingIndependentReview,
+		inspection.StateReadyForMaturation:
+	default:
+		return inspection.ErrWrongState
+	}
 	if in.OldWell == "" || in.NewWell == "" || in.OldWell == in.NewWell {
+		return ErrBadRequest
+	}
+	// Lease consistency: the task must actually hold an active lease on the old
+	// well it asks to release. Without this check a swap could acquire the new
+	// well while the task's real well stays leased (or release a well it never
+	// held), leaving the task owning two wells or a spurious released row.
+	leases, err := s.store.LoadLeases(ctx, in.TaskID)
+	if err != nil {
+		return err
+	}
+	if ledger.FindActive(leases, ledger.ResourceWell, in.OldWell) == nil {
 		return ErrBadRequest
 	}
 
