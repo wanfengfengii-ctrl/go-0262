@@ -294,7 +294,7 @@ func (s *SQLite) WithTx(ctx context.Context, fn func(Tx) error) error {
 	}
 	st := &sqlTx{tx: tx, owner: s}
 	if err := fn(st); err != nil {
-		_ = tx.Commit()
+		_ = tx.Rollback()
 		return err
 	}
 	return tx.Commit()
