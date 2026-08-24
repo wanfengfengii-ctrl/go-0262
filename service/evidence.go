@@ -302,17 +302,25 @@ func (s *Service) resolveCt(ctx context.Context, taskID inspection.TaskID, instr
 	}
 	raw, errCode := adapter.Call(call)
 	result := evidence.Classify(errCode)
+	// An instrument may return a success code with a payload that is not a
+	// valid Ct decimal. That is an instrument format error, not a plain
+	// reading error: reclassify it as malformed before recording so it enters
+	// the auditable pending-retry path and is visible in the retry queue.
+	var ct fixed.Decimal
+	if result == evidence.AttemptOK {
+		var err error
+		ct, err = fixed.Parse(raw, evidence.ScaleCt)
+		if err != nil {
+			result = evidence.AttemptMalformed
+		}
+	}
 	if err := s.recordAttempt(ctx, taskID, adapter.Instrument(), "dna", call, raw, result, errCode); err != nil {
 		return fixed.Decimal{}, err
 	}
 	if result.IsFailure() {
 		return fixed.Decimal{}, ErrAdapterRetry
 	}
-	d, err := fixed.Parse(raw, evidence.ScaleCt)
-	if err != nil {
-		return fixed.Decimal{}, ErrInvalidReading
-	}
-	return d, nil
+	return ct, nil
 }
 
 // resolveChemistry returns a ChemistryReading from direct strings or an
@@ -328,23 +336,35 @@ func (s *Service) resolveChemistry(ctx context.Context, taskID inspection.TaskID
 	}
 	raw, errCode := adapter.Call(call)
 	result := evidence.Classify(errCode)
+	// An instrument may return a success code with a payload that is not a
+	// valid chemistry reading (malformed JSON or non-decimal metrics). That is
+	// an instrument format error, not a plain reading error: reclassify it as
+	// malformed before recording so it enters the auditable pending-retry path
+	// and is visible in the retry queue.
+	var reading evidence.ChemistryReading
+	if result == evidence.AttemptOK {
+		var r struct {
+			HMF          string `json:"hmf"`
+			Amylase      string `json:"amylase"`
+			Moisture     string `json:"moisture"`
+			Conductivity string `json:"conductivity"`
+			Acidity      string `json:"acidity"`
+		}
+		if err := json.Unmarshal([]byte(raw), &r); err != nil {
+			result = evidence.AttemptMalformed
+		} else if cr, err := parseChemistry(r.HMF, r.Amylase, r.Moisture, r.Conductivity, r.Acidity); err != nil {
+			result = evidence.AttemptMalformed
+		} else {
+			reading = cr
+		}
+	}
 	if err := s.recordAttempt(ctx, taskID, adapter.Instrument(), "chemistry", call, raw, result, errCode); err != nil {
 		return evidence.ChemistryReading{}, err
 	}
 	if result.IsFailure() {
 		return evidence.ChemistryReading{}, ErrAdapterRetry
 	}
-	var r struct {
-		HMF          string `json:"hmf"`
-		Amylase      string `json:"amylase"`
-		Moisture     string `json:"moisture"`
-		Conductivity string `json:"conductivity"`
-		Acidity      string `json:"acidity"`
-	}
-	if err := json.Unmarshal([]byte(raw), &r); err != nil {
-		return evidence.ChemistryReading{}, ErrInvalidReading
-	}
-	return parseChemistry(r.HMF, r.Amylase, r.Moisture, r.Conductivity, r.Acidity)
+	return reading, nil
 }
 
 func parseChemistry(hmf, amylase, moisture, conductivity, acidity string) (evidence.ChemistryReading, error) {
