@@ -1,3 +1,4 @@
+基于 Go 实现的原蜜桶批熟化前联检 Web 项目，一款后端服务，管理抽样封存、花粉谱计数、遗传标记核验与熟化裁决。
 # nectargate-raw-honey-maturation-intake
 
 本 Git 项目来自模型完成任务后的 workspace，不包含嵌套 .git 记录或本地构建产物。
